@@ -390,6 +390,7 @@
         <thead>
           <tr>
             <th>Player</th>
+            <th>Outcome</th>
             <th>Game</th>
             <th>BetMGM Odds</th>
             <th>Market Avg</th>
@@ -583,6 +584,12 @@ function normalizePlayerName(name) {
     .trim();
 }
 
+function isHrOverOutcome(outcome) {
+  const name = (outcome?.name || '').toLowerCase();
+  const description = (outcome?.description || '').toLowerCase();
+  return name === 'over' || name === 'yes' || description === 'over' || description === 'yes';
+}
+
 function calcEV(betmgmOdds, trueProb) {
   const decimal = americanToDecimal(betmgmOdds);
   const payout = decimal - 1;
@@ -683,10 +690,10 @@ async function runScan() {
     if (!hrMarketBetMGM) continue;
     
     for (const outcome of hrMarketBetMGM.outcomes || []) {
-      const outcomeName = (outcome.name || '').toLowerCase();
-      if (outcomeName !== 'yes') continue;
+      if (!isHrOverOutcome(outcome)) continue;
+      const playerName = outcome.description || outcome.participant || '';
+      if (!playerName) continue;
 
-      const playerName = outcome.description || '';
       const normalizedPlayer = normalizePlayerName(playerName);
       const betmgmOdds = parseFloat(outcome.price);
       const passesMinOdds = betmgmOdds >= minOdds;
@@ -696,8 +703,8 @@ async function runScan() {
         const mkt = book.markets?.find(m => m.key === 'batter_home_runs');
         if (!mkt) continue;
         const o = mkt.outcomes?.find(x =>
-          (x.name || '').toLowerCase() === 'yes' &&
-          normalizePlayerName(x.description || '') === normalizedPlayer
+          isHrOverOutcome(x) &&
+          normalizePlayerName(x.description || x.participant || '') === normalizedPlayer
         );
         if (o) {
           const imp = americanToImplied(parseFloat(o.price));
@@ -730,6 +737,7 @@ async function runScan() {
       
       evBets.push({
         player: playerName,
+        outcomeLabel: 'Player to Hit a Home Run',
         game: `${game.away_team} @ ${game.home_team}`,
         betmgmOdds,
         marketAvgOdds,
@@ -795,6 +803,7 @@ function renderTable(bets) {
     return `
       <tr style="${rowStyle}">
         <td style="font-weight:500;">${b.player}${b.isPositive ? ' <span class="badge badge-green">+EV</span>' : ''}</td>
+        <td style="color:var(--muted);font-size:12px;">${b.outcomeLabel}</td>
         <td style="color:var(--muted);font-size:12px;">${b.game}</td>
         <td>${formatAmerican(b.betmgmOdds)} <span class="tag-betmgm">BetMGM</span></td>
         <td>${b.marketAvgOdds !== null ? formatAmerican(b.marketAvgOdds) : '—'}</td>
