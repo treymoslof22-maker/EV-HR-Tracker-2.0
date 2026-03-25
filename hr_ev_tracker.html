@@ -353,6 +353,14 @@
           <label>Minimum Odds (American)</label>
           <input type="number" id="cfg-min-odds" value="-150" step="5" placeholder="-150">
         </div>
+        <div class="field" style="grid-column: 1 / -1;">
+          <label>BatX Projections URL (optional JSON endpoint)</label>
+          <input type="text" id="cfg-batx-url" value="" placeholder="https://.../batx-hr-projections.json">
+        </div>
+        <div class="field">
+          <label>BatX API Token (optional)</label>
+          <input type="password" id="cfg-batx-token" value="" autocomplete="off" placeholder="Bearer token or API key">
+        </div>
       </div>
       <div class="row-btns">
         <button class="btn btn-primary" id="btn-start" onclick="startTracker()">
@@ -423,7 +431,7 @@
       <span class="section-title">How EV is Calculated</span>
     </div>
     <div class="config-card" style="font-size:13px;color:var(--muted);line-height:1.8;">
-      <p style="margin-bottom:10px;"><strong style="color:var(--text);">Step 1 — Consensus "true probability":</strong> We fetch HR To Score (anytime) props from all available sportsbooks via The Odds API. We remove vig from each book's line using the standard no-vig formula, then average those probabilities across all non-BetMGM books to get a market consensus true probability.</p>
+      <p style="margin-bottom:10px;"><strong style="color:var(--text);">Step 1 — Consensus "true probability":</strong> We fetch HR To Score (anytime) props from all available sportsbooks via The Odds API. We remove vig from each book's line using the standard no-vig formula, then average those probabilities across all non-BetMGM books to get a market consensus true probability. If a BatX projections URL is configured, we blend BatX with market consensus for the true probability estimate.</p>
       <p style="margin-bottom:10px;"><strong style="color:var(--text);">Step 2 — BetMGM implied probability:</strong> We take BetMGM Colorado's raw American odds and convert them to implied probability (without removing vig).</p>
       <p style="margin-bottom:10px;"><strong style="color:var(--text);">Step 3 — EV% formula:</strong> <code style="background:var(--surface2);padding:2px 6px;border-radius:4px;color:var(--accent);">EV% = (TrueProb × Payout) − (1 − TrueProb)</code> where Payout is the decimal payout from BetMGM's line (e.g. +200 → 2.0x).</p>
       <p><strong style="color:var(--text);">Step 4 — Alert:</strong> If EV% ≥ your threshold, a Pushover notification is sent to your phone with the player, odds, and EV%.</p>
@@ -494,6 +502,31 @@ function noVigProb(homeOdds, awayOdds) {
   return rawH / total;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWithRateLimitRetry(url, contextLabel, maxAttempts = 4) {
+  let lastErrorText = '';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url);
+    if (res.ok) return res;
+
+    lastErrorText = await res.text();
+    const isRateLimit = res.status === 429;
+    if (!isRateLimit || attempt === maxAttempts) {
+      throw new Error(`Odds API error ${res.status}${contextLabel ? ` for ${contextLabel}` : ''}: ${lastErrorText}`);
+    }
+
+    const retryDelayMs = Math.min(6000, 1200 * attempt);
+    log(`Rate-limited on ${contextLabel || 'request'} (attempt ${attempt}/${maxAttempts}). Retrying in ${(retryDelayMs / 1000).toFixed(1)}s...`, 'error');
+    await sleep(retryDelayMs);
+  }
+
+  throw new Error(`Odds API rate-limit retry failed${contextLabel ? ` for ${contextLabel}` : ''}: ${lastErrorText}`);
+}
+
 async function fetchHROdds() {
   const key = ODDS_API_KEY;
   
@@ -502,23 +535,90 @@ async function fetchHROdds() {
   const region = 'us';
   const oddsFormat = 'american';
   
-  const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=betmgm,fanduel,draftkings,pointsbet,caesars,espnbet`;
-  
-  const res = await fetch(url);
+  const bookmakers = 'betmgm,fanduel,draftkings,pointsbet,caesars,espnbet';
+  const eventsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/?apiKey=${key}`;
+
+  const eventsRes = await fetchWithRateLimitRetry(eventsUrl, 'events list');
+
+  sessionReqs++;
+
+  const eventsRemaining = eventsRes.headers.get('x-requests-remaining');
+  if (eventsRemaining) {
+    document.getElementById('stat-remaining').textContent = `${eventsRemaining} requests remaining`;
+  }
+
+  const events = await eventsRes.json();
+  const eventOddsPayloads = [];
+
+  for (const event of events) {
+    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=${bookmakers}`;
+    const eventOddsRes = await fetchWithRateLimitRetry(eventOddsUrl, `event ${event.id}`);
+
+    sessionReqs++;
+
+    const oddsRemaining = eventOddsRes.headers.get('x-requests-remaining');
+    if (oddsRemaining) {
+      document.getElementById('stat-remaining').textContent = `${oddsRemaining} requests remaining`;
+    }
+
+    const eventOdds = await eventOddsRes.json();
+    if (eventOdds?.bookmakers?.length) {
+      eventOddsPayloads.push(eventOdds);
+    }
+
+    await sleep(120);
+  }
+
+  document.getElementById('stat-reqs').textContent = sessionReqs;
+
+  return eventOddsPayloads;
+}
+
+function normalizePlayerName(name) {
+  return (name || '')
+    .toLowerCase()
+    .replace(/[.'’`-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function fetchBatXProjections() {
+  const url = cfg('cfg-batx-url');
+  if (!url) return new Map();
+
+  const token = cfg('cfg-batx-token');
+  const headers = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+    headers['x-api-key'] = token;
+  }
+
+  const res = await fetch(url, { headers });
   if (!res.ok) {
     const txt = await res.text();
-    throw new Error(`Odds API error ${res.status}: ${txt}`);
+    throw new Error(`BatX fetch error ${res.status}: ${txt}`);
   }
-  
-  const remaining = res.headers.get('x-requests-remaining');
-  if (remaining) {
-    document.getElementById('stat-remaining').textContent = `${remaining} requests remaining`;
+
+  const payload = await res.json();
+  const rows = Array.isArray(payload)
+    ? payload
+    : (payload?.projections || payload?.data || payload?.players || []);
+
+  const byPlayer = new Map();
+  for (const row of rows) {
+    const rawName = row?.player_name || row?.player || row?.name || row?.batter || row?.description;
+    let prob = row?.hr_prob ?? row?.home_run_prob ?? row?.prob_hr ?? row?.probability ?? row?.proj_hr_prob;
+    if (!rawName || prob === undefined || prob === null) continue;
+
+    prob = Number(prob);
+    if (!Number.isFinite(prob) || prob <= 0) continue;
+    if (prob > 1) prob = prob / 100;
+    if (prob > 1) continue;
+
+    byPlayer.set(normalizePlayerName(rawName), prob);
   }
-  
-  sessionReqs++;
-  document.getElementById('stat-reqs').textContent = sessionReqs;
-  
-  return res.json();
+
+  return byPlayer;
 }
 
 function calcEV(betmgmOdds, trueProb) {
@@ -594,6 +694,16 @@ async function runScan() {
   }
   
   log(`Fetched ${games.length} games with HR props.`, 'info');
+
+  let batxByPlayer = new Map();
+  if (cfg('cfg-batx-url')) {
+    try {
+      batxByPlayer = await fetchBatXProjections();
+      log(`Loaded ${batxByPlayer.size} BatX player projections.`, 'info');
+    } catch (e) {
+      log(`${e.message} — using market consensus only.`, 'error');
+    }
+  }
   
   const evBets = [];
   
@@ -612,6 +722,7 @@ async function runScan() {
     
     for (const outcome of hrMarketBetMGM.outcomes || []) {
       const playerName = outcome.description || outcome.name;
+      const normalizedPlayer = normalizePlayerName(playerName);
       const betmgmOdds = parseFloat(outcome.price);
       
       if (betmgmOdds < minOdds) continue;
@@ -630,7 +741,11 @@ async function runScan() {
       if (marketProbs.length < 2) continue;
       
       const avgVigProb = marketProbs.reduce((a, b) => a + b, 0) / marketProbs.length;
-      const trueProb = avgVigProb / (1 + (avgVigProb - 0.5) * 0.05);
+      const marketTrueProb = avgVigProb / (1 + (avgVigProb - 0.5) * 0.05);
+      const batxProb = batxByPlayer.get(normalizedPlayer);
+      const trueProb = batxProb
+        ? (0.65 * batxProb + 0.35 * marketTrueProb)
+        : marketTrueProb;
       
       const betmgmImplied = americanToImplied(betmgmOdds);
       const ev = calcEV(betmgmOdds, trueProb);
@@ -651,6 +766,7 @@ async function runScan() {
         marketAvgOdds,
         betmgmImplied,
         trueProb,
+        batxProb: batxProb ?? null,
         evPct,
         isPositive: evPct >= threshold * 100,
         key: `${playerName}-${betmgmOdds}-${game.id}`
