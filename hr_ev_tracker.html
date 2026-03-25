@@ -353,6 +353,14 @@
           <label>Minimum Odds (American)</label>
           <input type="number" id="cfg-min-odds" value="-150" step="5" placeholder="-150">
         </div>
+        <div class="field" style="grid-column: 1 / -1;">
+          <label>BatX Projections URL (optional JSON endpoint)</label>
+          <input type="text" id="cfg-batx-url" value="" placeholder="https://.../batx-hr-projections.json">
+        </div>
+        <div class="field">
+          <label>BatX API Token (optional)</label>
+          <input type="password" id="cfg-batx-token" value="" autocomplete="off" placeholder="Bearer token or API key">
+        </div>
       </div>
       <div class="row-btns">
         <button class="btn btn-primary" id="btn-start" onclick="startTracker()">
@@ -388,6 +396,7 @@
             <th>Market Avg</th>
             <th>BetMGM Implied</th>
             <th>True Prob</th>
+            <th>BatX Prob</th>
             <th>EV%</th>
             <th>Status</th>
           </tr>
@@ -654,6 +663,16 @@ async function runScan() {
   }
   
   log(`Fetched ${games.length} games with HR props.`, 'info');
+
+  let batxByPlayer = new Map();
+  if (cfg('cfg-batx-url')) {
+    try {
+      batxByPlayer = await fetchBatXProjections();
+      log(`Loaded ${batxByPlayer.size} BatX player projections.`, 'info');
+    } catch (e) {
+      log(`${e.message} — using market consensus only.`, 'error');
+    }
+  }
   
   const evBets = [];
   
@@ -724,6 +743,7 @@ async function runScan() {
         marketAvgOdds,
         betmgmImplied,
         trueProb,
+        batxProb: batxProb ?? null,
         evPct,
         passesMinOdds,
         isPositive: evPct !== null && evPct >= threshold * 100 && passesMinOdds,
