@@ -594,7 +594,12 @@ async function fetchBatXProjections() {
     headers['x-api-key'] = token;
   }
 
-  const res = await fetch(url, { headers });
+  let res;
+  try {
+    res = await fetch(url, { headers });
+  } catch (_) {
+    throw new Error('BatX fetch failed (network/CORS). If this is a private endpoint, use a CORS-enabled proxy URL');
+  }
   if (!res.ok) {
     const txt = await res.text();
     throw new Error(`BatX fetch error ${res.status}: ${txt}`);
@@ -725,8 +730,8 @@ async function runScan() {
       const playerName = outcome.description || outcome.name;
       const normalizedPlayer = normalizePlayerName(playerName);
       const betmgmOdds = parseFloat(outcome.price);
-      
-      if (betmgmOdds < minOdds) continue;
+      const batxProb = batxByPlayer.get(normalizedPlayer) ?? null;
+      const passesMinOdds = betmgmOdds >= minOdds;
       
       const marketProbs = [];
       for (const book of otherBooks) {
@@ -739,26 +744,30 @@ async function runScan() {
         }
       }
       
-      if (marketProbs.length < 2) continue;
-      
-      const avgVigProb = marketProbs.reduce((a, b) => a + b, 0) / marketProbs.length;
-      const marketTrueProb = avgVigProb / (1 + (avgVigProb - 0.5) * 0.05);
-      const batxProb = batxByPlayer.get(normalizedPlayer);
-      const trueProb = batxProb
+      const hasUsableMarket = marketProbs.length >= 2;
+      const avgVigProb = hasUsableMarket
+        ? marketProbs.reduce((a, b) => a + b, 0) / marketProbs.length
+        : null;
+      const marketTrueProb = avgVigProb !== null
+        ? avgVigProb / (1 + (avgVigProb - 0.5) * 0.05)
+        : null;
+      const trueProb = (batxProb !== null && marketTrueProb !== null)
         ? (0.65 * batxProb + 0.35 * marketTrueProb)
-        : marketTrueProb;
+        : (batxProb ?? marketTrueProb);
       
       const betmgmImplied = americanToImplied(betmgmOdds);
-      const ev = calcEV(betmgmOdds, trueProb);
-      const evPct = ev * 100;
+      const ev = trueProb !== null ? calcEV(betmgmOdds, trueProb) : null;
+      const evPct = ev !== null ? ev * 100 : null;
       
-      const marketAvgOdds = (() => {
-        const avgImp = marketProbs.reduce((a,b)=>a+b,0)/marketProbs.length;
-        if (avgImp <= 0) return 0;
-        return Math.round(avgImp >= 0.5
-          ? -(avgImp / (1 - avgImp)) * 100
-          : ((1 - avgImp) / avgImp) * 100);
-      })();
+      const marketAvgOdds = hasUsableMarket
+        ? (() => {
+          const avgImp = marketProbs.reduce((a,b)=>a+b,0)/marketProbs.length;
+          if (avgImp <= 0) return 0;
+          return Math.round(avgImp >= 0.5
+            ? -(avgImp / (1 - avgImp)) * 100
+            : ((1 - avgImp) / avgImp) * 100);
+        })()
+        : null;
       
       evBets.push({
         player: playerName,
@@ -769,13 +778,20 @@ async function runScan() {
         trueProb,
         batxProb: batxProb ?? null,
         evPct,
-        isPositive: evPct >= threshold * 100,
+        passesMinOdds,
+        isPositive: evPct !== null && evPct >= threshold * 100 && passesMinOdds,
+        isPlusFive: evPct !== null && evPct >= 5,
         key: `${playerName}-${betmgmOdds}-${game.id}`
       });
     }
   }
   
-  evBets.sort((a, b) => b.evPct - a.evPct);
+  evBets.sort((a, b) => {
+    if (a.evPct === null && b.evPct === null) return 0;
+    if (a.evPct === null) return 1;
+    if (b.evPct === null) return -1;
+    return b.evPct - a.evPct;
+  });
   
   const posCount = evBets.filter(b => b.isPositive).length;
   sessionEvCount += posCount;
@@ -814,22 +830,26 @@ function renderTable(bets) {
   }
   
   tbody.innerHTML = bets.map(b => {
-    const evClass = b.evPct >= 0 ? 'ev-pos' : 'ev-neg';
-    const evSign = b.evPct >= 0 ? '+' : '';
-    const rowStyle = b.isPositive ? 'background:rgba(61,240,160,0.04);' : '';
+    const evClass = b.evPct === null ? '' : (b.evPct >= 0 ? 'ev-pos' : 'ev-neg');
+    const evSign = b.evPct !== null && b.evPct >= 0 ? '+' : '';
+    const rowStyle = b.isPlusFive ? 'background:rgba(61,240,160,0.10);' : '';
     return `
       <tr style="${rowStyle}">
         <td style="font-weight:500;">${b.player}${b.isPositive ? ' <span class="badge badge-green">+EV</span>' : ''}</td>
         <td style="color:var(--muted);font-size:12px;">${b.game}</td>
         <td>${formatAmerican(b.betmgmOdds)} <span class="tag-betmgm">BetMGM</span></td>
-        <td>${formatAmerican(b.marketAvgOdds)}</td>
+        <td>${b.marketAvgOdds !== null ? formatAmerican(b.marketAvgOdds) : '—'}</td>
         <td>${(b.betmgmImplied * 100).toFixed(1)}%</td>
-        <td>${(b.trueProb * 100).toFixed(1)}%</td>
+        <td>${b.trueProb !== null ? `${(b.trueProb * 100).toFixed(1)}%` : '—'}</td>
         <td>${b.batxProb !== null ? `${(b.batxProb * 100).toFixed(1)}%` : '—'}</td>
-        <td class="ev-val ${evClass}">${evSign}${b.evPct.toFixed(1)}%</td>
-        <td>${b.isPositive
-          ? `<span class="badge badge-green">Bet it</span>`
-          : `<span class="badge badge-red">Skip</span>`
+        <td class="ev-val ${evClass}">${b.evPct !== null ? `${evSign}${b.evPct.toFixed(1)}%` : '—'}</td>
+        <td>${b.evPct === null
+          ? `<span class="badge">No model</span>`
+          : b.isPlusFive
+            ? `<span class="badge badge-green">+5% EV</span>`
+            : (b.isPositive
+              ? `<span class="badge badge-green">Bet it</span>`
+              : `<span class="badge badge-red">Skip</span>`)
         }</td>
       </tr>`;
   }).join('');
