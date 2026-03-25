@@ -322,15 +322,15 @@
       <div class="config-grid">
         <div class="field">
           <label>Odds API Key</label>
-          <input type="password" id="cfg-odds-key" placeholder="Enter your Odds API key..." autocomplete="off">
+          <input type="password" id="cfg-odds-key" value="91ec431ed0b88f3d8e48b719db1ae368" autocomplete="off" readonly>
         </div>
         <div class="field">
           <label>Pushover User Key</label>
-          <input type="password" id="cfg-push-user" placeholder="Your Pushover user key..." autocomplete="off">
+          <input type="password" id="cfg-push-user" value="u8s29a84uwrrtidoieqj1izetdeq59" autocomplete="off" readonly>
         </div>
         <div class="field">
           <label>Pushover App Token</label>
-          <input type="password" id="cfg-push-token" placeholder="Your Pushover app token..." autocomplete="off">
+          <input type="password" id="cfg-push-token" value="az6pk9ipdjj11rqkz7x1kfi28f9ppk" autocomplete="off" readonly>
         </div>
         <div class="field" style="grid-column: 1 / -1;">
           <label>Cloudflare Worker Proxy URL</label>
@@ -441,9 +441,15 @@ let sessionAlerts = 0;
 let sessionReqs = 0;
 let lastAlertedKeys = new Set();
 const CLOUDFLARE_WORKER_URL = 'https://super-art-7372.treymoslof22.workers.dev/';
+const ODDS_API_KEY = '91ec431ed0b88f3d8e48b719db1ae368';
+const PUSHOVER_APP_TOKEN = 'az6pk9ipdjj11rqkz7x1kfi28f9ppk';
+const PUSHOVER_USER_KEY = 'u8s29a84uwrrtidoieqj1izetdeq59';
 
 function cfg(id) { return document.getElementById(id).value.trim(); }
 document.getElementById('cfg-worker-url').value = CLOUDFLARE_WORKER_URL;
+document.getElementById('cfg-odds-key').value = ODDS_API_KEY;
+document.getElementById('cfg-push-token').value = PUSHOVER_APP_TOKEN;
+document.getElementById('cfg-push-user').value = PUSHOVER_USER_KEY;
 
 function log(msg, type='info') {
   const el = document.getElementById('alert-log');
@@ -489,8 +495,7 @@ function noVigProb(homeOdds, awayOdds) {
 }
 
 async function fetchHROdds() {
-  const key = cfg('cfg-odds-key');
-  if (!key) throw new Error('No Odds API key set.');
+  const key = ODDS_API_KEY;
   
   const sport = 'baseball_mlb';
   const market = 'batter_home_runs';
@@ -531,8 +536,8 @@ function formatAmerican(odds) {
 
 async function sendPushover(title, message) {
   const workerUrl = CLOUDFLARE_WORKER_URL;
-  const userKey = cfg('cfg-push-user');
-  const token = cfg('cfg-push-token');
+  const userKey = PUSHOVER_USER_KEY;
+  const token = PUSHOVER_APP_TOKEN;
   if (!userKey || !token) {
     log('Pushover keys not set — skipping notification.', 'error');
     return false;
