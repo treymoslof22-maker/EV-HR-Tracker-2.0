@@ -494,6 +494,31 @@ function noVigProb(homeOdds, awayOdds) {
   return rawH / total;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWithRateLimitRetry(url, contextLabel, maxAttempts = 4) {
+  let lastErrorText = '';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url);
+    if (res.ok) return res;
+
+    lastErrorText = await res.text();
+    const isRateLimit = res.status === 429;
+    if (!isRateLimit || attempt === maxAttempts) {
+      throw new Error(`Odds API error ${res.status}${contextLabel ? ` for ${contextLabel}` : ''}: ${lastErrorText}`);
+    }
+
+    const retryDelayMs = Math.min(6000, 1200 * attempt);
+    log(`Rate-limited on ${contextLabel || 'request'} (attempt ${attempt}/${maxAttempts}). Retrying in ${(retryDelayMs / 1000).toFixed(1)}s...`, 'error');
+    await sleep(retryDelayMs);
+  }
+
+  throw new Error(`Odds API rate-limit retry failed${contextLabel ? ` for ${contextLabel}` : ''}: ${lastErrorText}`);
+}
+
 async function fetchHROdds() {
   const key = ODDS_API_KEY;
   
@@ -502,23 +527,43 @@ async function fetchHROdds() {
   const region = 'us';
   const oddsFormat = 'american';
   
-  const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=betmgm,fanduel,draftkings,pointsbet,caesars,espnbet`;
-  
-  const res = await fetch(url);
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Odds API error ${res.status}: ${txt}`);
-  }
-  
-  const remaining = res.headers.get('x-requests-remaining');
-  if (remaining) {
-    document.getElementById('stat-remaining').textContent = `${remaining} requests remaining`;
-  }
-  
+  const bookmakers = 'betmgm,fanduel,draftkings,pointsbet,caesars,espnbet';
+  const eventsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/?apiKey=${key}`;
+
+  const eventsRes = await fetchWithRateLimitRetry(eventsUrl, 'events list');
+
   sessionReqs++;
+
+  const eventsRemaining = eventsRes.headers.get('x-requests-remaining');
+  if (eventsRemaining) {
+    document.getElementById('stat-remaining').textContent = `${eventsRemaining} requests remaining`;
+  }
+
+  const events = await eventsRes.json();
+  const eventOddsPayloads = [];
+
+  for (const event of events) {
+    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=${bookmakers}`;
+    const eventOddsRes = await fetchWithRateLimitRetry(eventOddsUrl, `event ${event.id}`);
+
+    sessionReqs++;
+
+    const oddsRemaining = eventOddsRes.headers.get('x-requests-remaining');
+    if (oddsRemaining) {
+      document.getElementById('stat-remaining').textContent = `${oddsRemaining} requests remaining`;
+    }
+
+    const eventOdds = await eventOddsRes.json();
+    if (eventOdds?.bookmakers?.length) {
+      eventOddsPayloads.push(eventOdds);
+    }
+
+    await sleep(120);
+  }
+
   document.getElementById('stat-reqs').textContent = sessionReqs;
-  
-  return res.json();
+
+  return eventOddsPayloads;
 }
 
 function calcEV(betmgmOdds, trueProb) {
