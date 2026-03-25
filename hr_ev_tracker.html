@@ -334,7 +334,7 @@
         </div>
         <div class="field" style="grid-column: 1 / -1;">
           <label>Cloudflare Worker Proxy URL</label>
-          <input type="text" id="cfg-worker-url" value="https://super-art-7372.treymoslof22.workers.dev" autocomplete="off">
+          <input type="text" id="cfg-worker-url" value="https://super-art-7372.treymoslof22.workers.dev/" autocomplete="off" readonly>
         </div>
         <div class="field">
           <label>+EV Alert Threshold (%)</label>
@@ -440,8 +440,10 @@ let sessionEvCount = 0;
 let sessionAlerts = 0;
 let sessionReqs = 0;
 let lastAlertedKeys = new Set();
+const CLOUDFLARE_WORKER_URL = 'https://super-art-7372.treymoslof22.workers.dev/';
 
 function cfg(id) { return document.getElementById(id).value.trim(); }
+document.getElementById('cfg-worker-url').value = CLOUDFLARE_WORKER_URL;
 
 function log(msg, type='info') {
   const el = document.getElementById('alert-log');
@@ -528,7 +530,7 @@ function formatAmerican(odds) {
 }
 
 async function sendPushover(title, message) {
-  const workerUrl = cfg('cfg-worker-url');
+  const workerUrl = CLOUDFLARE_WORKER_URL;
   const userKey = cfg('cfg-push-user');
   const token = cfg('cfg-push-token');
   if (!userKey || !token) {
