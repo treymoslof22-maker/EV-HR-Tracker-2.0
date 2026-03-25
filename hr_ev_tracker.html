@@ -502,23 +502,50 @@ async function fetchHROdds() {
   const region = 'us';
   const oddsFormat = 'american';
   
-  const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=betmgm,fanduel,draftkings,pointsbet,caesars,espnbet`;
-  
-  const res = await fetch(url);
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Odds API error ${res.status}: ${txt}`);
+  const bookmakers = 'betmgm,fanduel,draftkings,pointsbet,caesars,espnbet';
+  const eventsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/?apiKey=${key}`;
+
+  const eventsRes = await fetch(eventsUrl);
+  if (!eventsRes.ok) {
+    const txt = await eventsRes.text();
+    throw new Error(`Odds API error ${eventsRes.status}: ${txt}`);
   }
-  
-  const remaining = res.headers.get('x-requests-remaining');
-  if (remaining) {
-    document.getElementById('stat-remaining').textContent = `${remaining} requests remaining`;
-  }
-  
+
   sessionReqs++;
+
+  const eventsRemaining = eventsRes.headers.get('x-requests-remaining');
+  if (eventsRemaining) {
+    document.getElementById('stat-remaining').textContent = `${eventsRemaining} requests remaining`;
+  }
+
+  const events = await eventsRes.json();
+  const eventOddsPayloads = [];
+
+  for (const event of events) {
+    const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=${bookmakers}`;
+    const eventOddsRes = await fetch(eventOddsUrl);
+
+    if (!eventOddsRes.ok) {
+      const txt = await eventOddsRes.text();
+      throw new Error(`Odds API error ${eventOddsRes.status} for event ${event.id}: ${txt}`);
+    }
+
+    sessionReqs++;
+
+    const oddsRemaining = eventOddsRes.headers.get('x-requests-remaining');
+    if (oddsRemaining) {
+      document.getElementById('stat-remaining').textContent = `${oddsRemaining} requests remaining`;
+    }
+
+    const eventOdds = await eventOddsRes.json();
+    if (eventOdds?.bookmakers?.length) {
+      eventOddsPayloads.push(eventOdds);
+    }
+  }
+
   document.getElementById('stat-reqs').textContent = sessionReqs;
-  
-  return res.json();
+
+  return eventOddsPayloads;
 }
 
 function calcEV(betmgmOdds, trueProb) {
