@@ -494,6 +494,31 @@ function noVigProb(homeOdds, awayOdds) {
   return rawH / total;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWithRateLimitRetry(url, contextLabel, maxAttempts = 4) {
+  let lastErrorText = '';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url);
+    if (res.ok) return res;
+
+    lastErrorText = await res.text();
+    const isRateLimit = res.status === 429;
+    if (!isRateLimit || attempt === maxAttempts) {
+      throw new Error(`Odds API error ${res.status}${contextLabel ? ` for ${contextLabel}` : ''}: ${lastErrorText}`);
+    }
+
+    const retryDelayMs = Math.min(6000, 1200 * attempt);
+    log(`Rate-limited on ${contextLabel || 'request'} (attempt ${attempt}/${maxAttempts}). Retrying in ${(retryDelayMs / 1000).toFixed(1)}s...`, 'error');
+    await sleep(retryDelayMs);
+  }
+
+  throw new Error(`Odds API rate-limit retry failed${contextLabel ? ` for ${contextLabel}` : ''}: ${lastErrorText}`);
+}
+
 async function fetchHROdds() {
   const key = ODDS_API_KEY;
   
@@ -505,11 +530,7 @@ async function fetchHROdds() {
   const bookmakers = 'betmgm,fanduel,draftkings,pointsbet,caesars,espnbet';
   const eventsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/?apiKey=${key}`;
 
-  const eventsRes = await fetch(eventsUrl);
-  if (!eventsRes.ok) {
-    const txt = await eventsRes.text();
-    throw new Error(`Odds API error ${eventsRes.status}: ${txt}`);
-  }
+  const eventsRes = await fetchWithRateLimitRetry(eventsUrl, 'events list');
 
   sessionReqs++;
 
@@ -523,12 +544,7 @@ async function fetchHROdds() {
 
   for (const event of events) {
     const eventOddsUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/?apiKey=${key}&regions=${region}&markets=${market}&oddsFormat=${oddsFormat}&bookmakers=${bookmakers}`;
-    const eventOddsRes = await fetch(eventOddsUrl);
-
-    if (!eventOddsRes.ok) {
-      const txt = await eventOddsRes.text();
-      throw new Error(`Odds API error ${eventOddsRes.status} for event ${event.id}: ${txt}`);
-    }
+    const eventOddsRes = await fetchWithRateLimitRetry(eventOddsUrl, `event ${event.id}`);
 
     sessionReqs++;
 
@@ -541,6 +557,8 @@ async function fetchHROdds() {
     if (eventOdds?.bookmakers?.length) {
       eventOddsPayloads.push(eventOdds);
     }
+
+    await sleep(120);
   }
 
   document.getElementById('stat-reqs').textContent = sessionReqs;
