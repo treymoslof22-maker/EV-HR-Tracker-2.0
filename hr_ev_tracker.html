@@ -395,13 +395,14 @@
             <th>Market Avg</th>
             <th>BetMGM Implied</th>
             <th>True Prob</th>
+            <th>BatX Prob</th>
             <th>EV%</th>
             <th>Status</th>
           </tr>
         </thead>
         <tbody id="ev-tbody">
           <tr>
-            <td colspan="8">
+            <td colspan="9">
               <div class="empty-state">
                 <div class="icon">⚾</div>
                 <p>Run a scan to see live home run prop odds from BetMGM Colorado.</p>
@@ -808,7 +809,7 @@ async function runScan() {
 function renderTable(bets) {
   const tbody = document.getElementById('ev-tbody');
   if (bets.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="icon">⚾</div><p>No home run props found for today's games.</p></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="icon">⚾</div><p>No home run props found for today's games.</p></div></td></tr>`;
     return;
   }
   
@@ -824,6 +825,7 @@ function renderTable(bets) {
         <td>${formatAmerican(b.marketAvgOdds)}</td>
         <td>${(b.betmgmImplied * 100).toFixed(1)}%</td>
         <td>${(b.trueProb * 100).toFixed(1)}%</td>
+        <td>${b.batxProb !== null ? `${(b.batxProb * 100).toFixed(1)}%` : '—'}</td>
         <td class="ev-val ${evClass}">${evSign}${b.evPct.toFixed(1)}%</td>
         <td>${b.isPositive
           ? `<span class="badge badge-green">Bet it</span>`
